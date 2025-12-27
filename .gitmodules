@@ -1,0 +1,4 @@
+[submodule "external/hashcards"]
+	path = external/hashcards
+	url = https://github.com/eudoxia0/hashcards.git
+	branch = master
