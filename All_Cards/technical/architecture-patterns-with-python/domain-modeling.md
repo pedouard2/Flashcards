@@ -5,16 +5,13 @@ Q: Why do we replace the term "Business Logic Layer" with "Domain Model"?
 A: To emphasize that the software should be a map of the business owner's mental model, not just a collection of technical rules.
 <!--ID: 1767492460732-->
 
-  
 C: A {model} is a simplification that captures useful properties of a process, but it is not intended to be a {perfect replica} of reality.
 <!--ID: 1767492460750-->
 
-  
 Q: Why is it critical to adopt the "Ubiquitous Language" (business jargon) in code and tests?
 A: It removes the need for translation between stakeholders and developers, preventing misunderstandings and ensuring the software solves the actual business problem.
 <!--ID: 1767492460734-->
 
-  
 C: When business stakeholders use specific jargon, it represents a {distilled understanding} of complex processes that should be encoded directly into the software.
 <!--ID: 1767492460752-->
 
