@@ -18,5 +18,11 @@ sync:
 	git diff --cached --quiet || git commit -m "sync $$(date +%F)"
 	git push
 
+.PHONY: install-cron
+install-cron:
+	(crontab -l 2>/dev/null | grep -qF "flashcards sync") || \
+	(crontab -l 2>/dev/null; echo "0 21 * * * make -C $(CURDIR) sync") | crontab -
+	@echo "Cron job installed"
+
 .PHONY: setup
-setup: link install-hooks
+setup: link install-hooks install-cron
