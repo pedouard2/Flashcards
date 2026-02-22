@@ -12,5 +12,11 @@ install-hooks:
 	chmod +x .git/hooks/pre-commit
 	@echo "Installed pre-commit hook"
 
+.PHONY: sync
+sync:
+	git add -A
+	git diff --cached --quiet || git commit -m "sync $$(date +%F)"
+	git push
+
 .PHONY: setup
 setup: link install-hooks
