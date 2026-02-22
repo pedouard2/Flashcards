@@ -1,0 +1,9 @@
+#!/bin/bash
+# Collapse multiple blank lines into one in staged card files
+staged=$(git diff --cached --name-only --diff-filter=ACM | grep '\.md$')
+[ -z "$staged" ] && exit 0
+
+for f in $staged; do
+    perl -i -0pe 's/\n{3,}/\n\n/g' "$f"
+    git add "$f"
+done
