@@ -24,5 +24,13 @@ install-cron:
 	(crontab -l 2>/dev/null; echo "0 21 * * * make -C $(CURDIR) sync") | crontab -
 	@echo "Cron job installed"
 
+.PHONY: suggest
+suggest:
+	uv run scripts/suggest.py diff $(if $(SINCE),--since=$(SINCE),) $(if $(DIR),--dir=$(DIR),)
+
+.PHONY: suggest-all
+suggest-all:
+	uv run scripts/suggest.py all $(if $(DIR),--dir=$(DIR),)
+
 .PHONY: setup
 setup: link install-hooks install-cron
