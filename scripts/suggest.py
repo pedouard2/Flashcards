@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["litellm"]
+# dependencies = ["litellm", "pydantic"]
 # ///
 """
 AI-powered flashcard review.
 
 Usage:
-  python scripts/suggest.py diff [--since=HASH] [--dir=PATH]
-  python scripts/suggest.py all [--dir=PATH]
+  uv run scripts/suggest.py diff [--since=HASH] [--dir=PATH] [--dry]
+  uv run scripts/suggest.py all [--dir=PATH] [--dry]
 
 Environment:
   SUGGEST_MODEL   LiteLLM model string (default: claude-sonnet-4-6)
@@ -16,37 +16,45 @@ Environment:
 """
 
 import os
-import sys
+import json
 import subprocess
 import argparse
 from pathlib import Path
 from datetime import datetime
+from pydantic import BaseModel
+from typing import Literal
 
-try:
-    import litellm
-except ImportError:
-    print("litellm not installed. Run: pip install litellm")
-    sys.exit(1)
+import litellm
+litellm.drop_params = True
 
 REPO_ROOT = Path(__file__).parent.parent
 CARDS_DIR = REPO_ROOT / "cards"
 VAULT_DIR = Path(os.path.realpath(CARDS_DIR)).parent
 SUGGESTIONS_FILE = VAULT_DIR / "Suggestions.md"
 RULES_FILE = VAULT_DIR / "Flashcard Rules.md"
-MODEL = os.environ.get("SUGGEST_MODEL", "claude-sonnet-4-6")
+MODEL = os.environ.get("SUGGEST_MODEL", "gpt-5-mini")
 
-SYSTEM_PROMPT = """You are a spaced repetition expert reviewing Anki flashcards.
+IssueType = Literal[
+    "multi_blank_cloze",    # cloze card has multiple independent blanks
+    "bundled_answer",       # Q&A answer contains multiple independent facts
+    "missing_reverse",      # term→definition exists but not definition→term
+    "missing_list_card",    # individual definition cards exist but no overview list card
+    "missing_qa_for_cloze", # important cloze has no Q&A counterpart
+]
 
-Suggest improvements based on these principles:
-- Atomic: each card tests exactly one thing
-- Two-way: if term→definition exists, also write definition→term
-- One blank per cloze card
-- Split answers that list multiple facts into separate cards
-- Groups/sequences need a list card separate from individual definition cards
-- Pair important cloze cards with a Q&A version
 
-For each suggestion: show the original card, briefly explain the issue, then show the improved version(s).
-Be concise and specific. Skip cards that are already well-written."""
+class Suggestion(BaseModel):
+    original: str
+    issue_type: IssueType
+    explanation: str
+    improved: list[str]
+
+
+class DeckReview(BaseModel):
+    suggestions: list[Suggestion]
+
+
+SYSTEM_PROMPT = (Path(__file__).parent / "prompts" / "system.txt").read_text(encoding="utf-8")
 
 
 def get_rules() -> str:
@@ -74,36 +82,44 @@ def group_by_subfolder(base: Path) -> dict:
     return groups
 
 
-def call_llm(deck_name: str, content: str, rules: str) -> str:
-    prompt = f"""Review the following flashcard deck and suggest improvements.
-
-## Rules Reference
-{rules}
-
-## Deck: {deck_name}
-
-{content}"""
+def call_llm(deck_name: str, content: str) -> DeckReview:
+    prompt = f"Review this flashcard deck and return only the JSON object.\n\n## Deck: {deck_name}\n\n{content}"
     response = litellm.completion(
         model=MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        system=SYSTEM_PROMPT,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0,
     )
-    return response.choices[0].message.content
+    return DeckReview.model_validate_json(response.choices[0].message.content)
 
 
-def append_suggestions(entries: list) -> None:
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    lines = [f"# Review — {timestamp}\n"]
-    for deck_name, suggestion in entries:
-        lines.append(f"## {deck_name}\n\n{suggestion}\n")
-    lines.append("---\n")
+def flush_suggestion(deck_name: str, review: DeckReview, first: bool) -> None:
+    if not review.suggestions:
+        print(f"  No issues found.")
+        return
 
     with open(SUGGESTIONS_FILE, "a", encoding="utf-8") as f:
-        f.write("\n".join(lines))
-    print(f"Written to {SUGGESTIONS_FILE}")
+        if first:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+            f.write(f"# Review — {timestamp}\n\n")
+
+        f.write(f"## {deck_name}\n\n")
+        for s in review.suggestions:
+            f.write(f"**Issue:** `{s.issue_type}`  \n")
+            f.write(f"**Original:**\n```\n{s.original}\n```\n")
+            f.write(f"**Why:** {s.explanation}  \n")
+            f.write(f"**Improved:**\n")
+            for card in s.improved:
+                f.write(f"```\n{card}\n```\n")
+            f.write("\n---\n\n")
+
+    print(f"  {len(review.suggestions)} suggestion(s) written.")
 
 
-def run_diff(since: str | None, dir_filter: str | None) -> None:
+def run_diff(since: str | None, dir_filter: str | None, dry: bool) -> None:
     files = changed_files(since)
     if dir_filter:
         files = [f for f in files if dir_filter in str(f)]
@@ -111,34 +127,44 @@ def run_diff(since: str | None, dir_filter: str | None) -> None:
         print("No changed card files found.")
         return
 
-    rules = get_rules()
-    entries = []
-    for f in files:
+    if dry:
+        print("Files that would be reviewed:")
+        for f in files:
+            print(f"  {f.relative_to(REPO_ROOT)}")
+        return
+
+    for i, f in enumerate(files):
         print(f"Reviewing {f.name}...")
-        suggestion = call_llm(f.stem, f.read_text(encoding="utf-8"), rules)
-        entries.append((str(f.relative_to(REPO_ROOT)), suggestion))
+        review = call_llm(f.stem, f.read_text(encoding="utf-8"))
+        flush_suggestion(str(f.relative_to(REPO_ROOT)), review, first=i == 0)
 
-    append_suggestions(entries)
+    print(f"Written to {SUGGESTIONS_FILE}")
 
 
-def run_all(dir_filter: str | None) -> None:
+def run_all(dir_filter: str | None, dry: bool) -> None:
     base = Path(dir_filter) if dir_filter else CARDS_DIR
     groups = group_by_subfolder(base)
     if not groups:
         print("No card files found.")
         return
 
-    rules = get_rules()
-    entries = []
-    for subfolder, files in sorted(groups.items()):
+    if dry:
+        print("Subfolders that would be reviewed:")
+        for subfolder, files in sorted(groups.items()):
+            print(f"  {subfolder}/")
+            for f in files:
+                print(f"    {f.name}")
+        return
+
+    for i, (subfolder, files) in enumerate(sorted(groups.items())):
         print(f"Reviewing {subfolder}...")
         content = "\n\n---\n\n".join(
             f"### {f.stem}\n{f.read_text(encoding='utf-8')}" for f in files
         )
-        suggestion = call_llm(subfolder, content, rules)
-        entries.append((subfolder, suggestion))
+        review = call_llm(subfolder, content)
+        flush_suggestion(subfolder, review, first=i == 0)
 
-    append_suggestions(entries)
+    print(f"Written to {SUGGESTIONS_FILE}")
 
 
 def main() -> None:
@@ -146,12 +172,13 @@ def main() -> None:
     parser.add_argument("mode", choices=["diff", "all"])
     parser.add_argument("--since", help="Git ref to diff from, e.g. HEAD~1 (diff mode only)")
     parser.add_argument("--dir", help="Limit to a specific directory")
+    parser.add_argument("--dry", action="store_true", help="List what would be reviewed without calling the LLM")
     args = parser.parse_args()
 
     if args.mode == "diff":
-        run_diff(args.since, args.dir)
+        run_diff(args.since, args.dir, args.dry)
     else:
-        run_all(args.dir)
+        run_all(args.dir, args.dry)
 
 
 if __name__ == "__main__":
